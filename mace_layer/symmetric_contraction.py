@@ -32,6 +32,7 @@ class SymmetricContraction(CodeGenMixin, torch.nn.Module):
         internal_weights: Optional[bool] = None,
         shared_weights: Optional[bool] = None,
         num_elements: Optional[int] = None,
+        r_lora: Optional[int] = None,
     ) -> None:
         super().__init__()
 
@@ -75,6 +76,7 @@ class SymmetricContraction(CodeGenMixin, torch.nn.Module):
                     internal_weights=self.internal_weights,
                     num_elements=num_elements,
                     weights=self.shared_weights,
+                    r_lora=r_lora,
                 )
             )
 
@@ -93,6 +95,7 @@ class Contraction(torch.nn.Module):
         internal_weights: bool = True,
         num_elements: Optional[int] = None,
         weights: Optional[torch.Tensor] = None,
+        r_lora: Optional[int] = None,
     ) -> None:
         super().__init__()
 
@@ -152,6 +155,16 @@ class Contraction(torch.nn.Module):
                     / num_params
                 )
                 self.weights_max = w
+
+                self.r_lora = r_lora
+                if r_lora is not None:
+                    # LoRA weights initialization
+                    self.LoRA_weight = []
+                    self.alpha = r_lora
+                    self.LoRA_weight.append(torch.nn.Parameter(torch.randn(num_elements, num_params, self.r_lora) / num_params))
+                    self.LoRA_weight.append(torch.nn.Parameter(torch.zeros(self.r_lora, self.num_features)))
+                    self.LoRA_weight = torch.nn.ParameterList(self.LoRA_weight)
+
             else:
                 # Generate optimized contractions equations
                 parse_subscript_weighting = (
@@ -210,8 +223,11 @@ class Contraction(torch.nn.Module):
             self.weights_max = weights[-1]
 
     def forward(self, x: torch.Tensor, y: torch.Tensor):
+        w = self.weights_max
+        if self.r_lora is not None:
+            w = w + self.alpha / self.r_lora * self.LoRA_weight[0] @ self.LoRA_weight[1]
         out = self.graph_opt_main(
-            self.U_tensors(self.correlation), self.weights_max, x, y,
+            self.U_tensors(self.correlation), w, x, y,
         )
         for i, (weight, contract_weights, contract_features) in enumerate(
             zip(self.weights, self.contractions_weighting, self.contractions_features)
@@ -226,3 +242,11 @@ class Contraction(torch.nn.Module):
 
     def U_tensors(self, nu: int):
         return dict(self.named_buffers())[f"U_matrix_{nu}"]
+
+    def merge_LoRA(self):
+        if self.r_lora is None:
+            return
+        self.weights_max.data = self.weights_max + self.alpha / self.r_lora * self.LoRA_weight[0] @ self.LoRA_weight[1]
+        del self.LoRA_weight
+        del self.alpha
+        self.r_lora = None

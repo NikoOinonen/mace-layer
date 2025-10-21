@@ -1,18 +1,16 @@
 from abc import abstractmethod
 from typing import Optional, Tuple
 
-
 import torch
-from e3nn import o3, nn
+from e3nn import o3
 from e3nn.util.jit import compile_mode
 
 from mace_layer.scatter import scatter_sum
 from mace_layer.symmetric_contraction import SymmetricContraction
 
-from .irreps_tools import (
-    reshape_irreps,
-    tp_out_irreps_with_instructions,
-)
+from .e3nn_elora.nn import FullyConnectedNet
+from .e3nn_elora.o3 import FullyConnectedTensorProduct, Linear, TensorProduct
+from .irreps_tools import reshape_irreps, tp_out_irreps_with_instructions
 
 
 @compile_mode("script")
@@ -45,6 +43,7 @@ class EquivariantProductBasisBlock(torch.nn.Module):
         correlation: int,
         use_sc: bool = True,
         num_elements: Optional[int] = None,
+        r_lora: Optional[int] = None,
     ) -> None:
         super().__init__()
 
@@ -54,10 +53,11 @@ class EquivariantProductBasisBlock(torch.nn.Module):
             irreps_out=target_irreps,
             correlation=correlation,
             num_elements=num_elements,
+            r_lora=r_lora,
         )
         # Update linear
-        self.linear = o3.Linear(
-            target_irreps, target_irreps, internal_weights=True, shared_weights=True,
+        self.linear = Linear(
+            target_irreps, target_irreps, internal_weights=True, shared_weights=True, r_lora=r_lora
         )
 
     def forward(
@@ -84,6 +84,7 @@ class InteractionBlock(torch.nn.Module):
         target_irreps: o3.Irreps,
         hidden_irreps: o3.Irreps,
         avg_num_neighbors: float,
+        r_lora: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.node_attrs_irreps = node_attrs_irreps
@@ -93,6 +94,7 @@ class InteractionBlock(torch.nn.Module):
         self.target_irreps = target_irreps
         self.hidden_irreps = hidden_irreps
         self.avg_num_neighbors = avg_num_neighbors
+        self.r_lora = r_lora
 
         self._setup()
 
@@ -116,42 +118,45 @@ class InteractionBlock(torch.nn.Module):
 class AgnosticInteractionBlock(InteractionBlock):
     def _setup(self) -> None:
         # First linear
-        self.linear_up = o3.Linear(
+        self.linear_up = Linear(
             self.node_feats_irreps,
             self.node_feats_irreps,
             internal_weights=True,
             shared_weights=True,
+            r_lora=self.r_lora,
         )
         # TensorProduct
         irreps_mid, instructions = tp_out_irreps_with_instructions(
             self.node_feats_irreps, self.edge_attrs_irreps, self.target_irreps,
         )
-        self.conv_tp = o3.TensorProduct(
+        self.conv_tp = TensorProduct(
             self.node_feats_irreps,
             self.edge_attrs_irreps,
             irreps_mid,
             instructions=instructions,
             shared_weights=False,
             internal_weights=False,
+            r_lora=self.r_lora
         )
 
         # Convolution weights
         input_dim = self.edge_feats_irreps.num_irreps
-        self.conv_tp_weights = nn.FullyConnectedNet(
+        self.conv_tp_weights = FullyConnectedNet(
             [input_dim] + 3 * [64] + [self.conv_tp.weight_numel],
             torch.nn.functional.silu,
+            r_lora=self.r_lora,
         )
 
         # Linear
         irreps_mid = irreps_mid.simplify()
         self.irreps_out = self.target_irreps
-        self.linear = o3.Linear(
-            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True
+        self.linear = Linear(
+            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True, r_lora=self.r_lora
         )
 
         # Selector TensorProduct
-        self.skip_tp = o3.FullyConnectedTensorProduct(
-            self.irreps_out, self.node_attrs_irreps, self.irreps_out
+        self.skip_tp = FullyConnectedTensorProduct(
+            self.irreps_out, self.node_attrs_irreps, self.irreps_out, r_lora=self.r_lora
         )
         self.reshape = reshape_irreps(self.irreps_out)
 
@@ -187,28 +192,30 @@ class RealAgnosticResidualInteractionBlock(InteractionBlock):
     def _setup(self) -> None:
 
         # First linear
-        self.linear_up = o3.Linear(
+        self.linear_up = Linear(
             self.node_feats_irreps,
             self.node_feats_irreps,
             internal_weights=True,
             shared_weights=True,
+            r_lora=self.r_lora,
         )
         # TensorProduct
         irreps_mid, instructions = tp_out_irreps_with_instructions(
             self.node_feats_irreps, self.edge_attrs_irreps, self.target_irreps,
         )
-        self.conv_tp = o3.TensorProduct(
+        self.conv_tp = TensorProduct(
             self.node_feats_irreps,
             self.edge_attrs_irreps,
             irreps_mid,
             instructions=instructions,
             shared_weights=False,
             internal_weights=False,
+            r_lora=self.r_lora,
         )
 
         # Convolution weights
         input_dim = self.edge_feats_irreps.num_irreps
-        self.conv_tp_weights = nn.FullyConnectedNet(
+        self.conv_tp_weights = FullyConnectedNet(
             [input_dim] + 3 * [64] + [self.conv_tp.weight_numel],
             torch.nn.functional.silu,
         )
@@ -216,13 +223,13 @@ class RealAgnosticResidualInteractionBlock(InteractionBlock):
         # Linear
         irreps_mid = irreps_mid.simplify()
         self.irreps_out = self.target_irreps
-        self.linear = o3.Linear(
-            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True
+        self.linear = Linear(
+            irreps_mid, self.irreps_out, internal_weights=True, shared_weights=True, r_lora=self.r_lora
         )
 
         # Selector TensorProduct
-        self.skip_tp = o3.FullyConnectedTensorProduct(
-            self.node_feats_irreps, self.node_attrs_irreps, self.hidden_irreps
+        self.skip_tp = FullyConnectedTensorProduct(
+            self.node_feats_irreps, self.node_attrs_irreps, self.hidden_irreps, r_lora=self.r_lora
         )
         self.reshape = reshape_irreps(self.irreps_out)
 
