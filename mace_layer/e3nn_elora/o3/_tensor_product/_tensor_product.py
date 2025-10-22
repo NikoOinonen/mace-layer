@@ -424,6 +424,7 @@ class TensorProduct(CodeGenMixin, torch.nn.Module):
                         self.LoRA_weight.append(torch.nn.Parameter(torch.randn(ins.path_shape[0] * ins.path_shape[1], self.r_lora)))
                         self.LoRA_weight.append(torch.nn.Parameter(torch.zeros(self.r_lora, ins.path_shape[2])))
                 self.LoRA_weight_numel = sum(ins.path_shape[0] * ins.path_shape[1] * self.r_lora + self.r_lora * ins.path_shape[2] for ins in self.instructions if ins.has_weight)
+                self.LoRA_weight = torch.nn.ParameterList(self.LoRA_weight)
         else:
             # For TorchScript, there always has to be some kind of defined .weight
             self.register_buffer("weight", torch.Tensor())
