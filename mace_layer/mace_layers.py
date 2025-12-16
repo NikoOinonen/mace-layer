@@ -3,7 +3,7 @@ from typing import Callable, Optional
 import torch
 from e3nn import o3
 
-from mace_layer.blocks import (
+from .blocks import (
     EquivariantProductBasisBlock,
     RealAgnosticResidualInteractionBlock,
 )

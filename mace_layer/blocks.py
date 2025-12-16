@@ -5,8 +5,8 @@ import torch
 from e3nn import o3
 from e3nn.util.jit import compile_mode
 
-from mace_layer.scatter import scatter_sum
-from mace_layer.symmetric_contraction import SymmetricContraction
+from .scatter import scatter_sum
+from .symmetric_contraction import SymmetricContraction
 
 from .e3nn_elora.nn import FullyConnectedNet
 from .e3nn_elora.o3 import FullyConnectedTensorProduct, Linear, TensorProduct
